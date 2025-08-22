@@ -18,7 +18,7 @@ presentation, or other academic output, you must include the following
 citation in the references or acknowledgments:  
 
 Sadikin, A. H. 2025. CurveAnalyze (Version 1.0) [Computer Software].  
-Retrieved from https://github.com/[yourusername]/[reponame]
+Retrieved from https://github.com/photographerid/CurveAnalyze
 
 A BibTex entry for LaTex users is
 
@@ -26,7 +26,7 @@ A BibTex entry for LaTex users is
   title = {CurveAnalyze (Version 1.0)},
   author = {Abdul Halim Sadikin},
   year = {2025},
-  url = {https://github.com/[yourusername]/[reponame]},
+  url = {https://github.com/photographerid/CurveAnalyze},
 }
 
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR  

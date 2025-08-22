@@ -1,6 +1,7 @@
 ## CurveAnalyze
 
-A simple and free-to-use program for analyzing ELISA data, designed for researchers and students in biomedical sciences.  
+A simple and free-to-use program for analyzing ELISA data, designed for researchers and students in biomedical sciences.
+
 This tool provides curve fitting and concentration calculation. Making ELISA result interpretation faster and more reproducible.
 
 ---
@@ -27,15 +28,14 @@ If this Software is used to produce results in a scientific publication,
 presentation, or other academic output, you must include the following  
 citation in the references or acknowledgments:  
 
-Sadikin, A. H. 2025. CurveAnalyze (Version 1.0) [Computer Software].  
-Retrieved from https://github.com/[yourusername]/[reponame]
+Sadikin, A. H. 2025. CurveAnalyze (Version 1.0) [Computer Software]. Retrieved from https://github.com/photographerid/CurveAnalyze   
 
 A BibTex entry for LaTex users is
 
-@Manual{,
-  title = {CurveAnalyze (Version 1.0)},
-  author = {Abdul Halim Sadikin},
-  year = {2025},
-  url = {https://github.com/[yourusername]/[reponame]},
+@Manual{, \
+  title = {CurveAnalyze (Version 1.0)}, \
+  author = {Abdul Halim Sadikin}, \
+  year = {2025}, \
+  url = {https://github.com/photographerid/CurveAnalyze},
 }
 
