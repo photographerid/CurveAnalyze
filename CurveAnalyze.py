@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from scipy.optimize import curve_fit, fsolve
+from scipy.optimize import brentq, curve_fit
 
 # ========== MATHEMATICAL FUNCTIONS ==========
 def four_param_logistic(x, A, B, C, D):
@@ -24,14 +24,22 @@ def calculate_r_squared(y_true, y_pred):
     ss_tot = np.sum((y_true - np.mean(y_true))**2)
     return 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
 
+
+def normalize_column_name(name):
+    """Normalize column names for loose matching."""
+    return ''.join(ch.lower() for ch in str(name) if ch.isalnum())
+
 # ========== STYLE MANAGER ==========
 class StyleManager:
     def __init__(self):
         self.bg_color = "#f5f6f8"
         self.card_color = "#ffffff"
         self.primary_color = "#4a6fa5"
+        self.primary_hover_color = "#3e5e8c"
         self.accent_color = "#28a745"
+        self.accent_hover_color = "#218838"
         self.error_color = "#dc3545"
+        self.error_hover_color = "#c82333"
         self.font_family = "Segoe UI"
         
     def configure_styles(self):
@@ -55,18 +63,27 @@ class StyleManager:
                       background=self.primary_color,
                       borderwidth=0,
                       padding=6)
+        style.map('Primary.TButton',
+                  foreground=[('disabled', '#f0f0f0'), ('active', 'white'), ('pressed', 'white')],
+                  background=[('disabled', '#b8c4d6'), ('active', self.primary_hover_color), ('pressed', self.primary_hover_color)])
         
         style.configure('Accent.TButton',
                       foreground='white',
                       background=self.accent_color,
                       borderwidth=0,
                       padding=6)
+        style.map('Accent.TButton',
+                  foreground=[('disabled', '#f0f0f0'), ('active', 'white'), ('pressed', 'white')],
+                  background=[('disabled', '#b7ddc0'), ('active', self.accent_hover_color), ('pressed', self.accent_hover_color)])
         
         style.configure('Danger.TButton',
                       foreground='white',
                       background=self.error_color,
                       borderwidth=0,
                       padding=6)
+        style.map('Danger.TButton',
+                  foreground=[('disabled', '#f0f0f0'), ('active', 'white'), ('pressed', 'white')],
+                  background=[('disabled', '#e5b8bf'), ('active', self.error_hover_color), ('pressed', self.error_hover_color)])
         
         # Label styles
         style.configure('Title.TLabel',
@@ -159,6 +176,10 @@ class ELISAApplication:
         self.y = None
         self.popt = None
         self.r_squared = None
+        self.fitted_model = None
+        self.welcome_dialog = None
+        self.license_dialog = None
+        self.readme_dialog = None
         self.model_var = tk.StringVar(value='4PL')
         self.show_formula = tk.BooleanVar(value=True)
         self.show_r2 = tk.BooleanVar(value=True)
@@ -168,9 +189,124 @@ class ELISAApplication:
         
         # Show about dialog on first run
         self.show_about()
+
+    def get_model_function(self):
+        """Return the currently selected logistic model."""
+        return four_param_logistic if self.model_var.get() == '4PL' else three_param_logistic
+
+    def get_fitted_model_function(self):
+        """Return the logistic model used by the current fit."""
+        if self.fitted_model == '4PL':
+            return four_param_logistic
+        if self.fitted_model == '3PL':
+            return three_param_logistic
+        raise ValueError("Please fit the curve first.")
+
+    def reset_analysis_state(self):
+        """Clear the current fit, plot, and derived outputs."""
+        self.popt = None
+        self.r_squared = None
+        self.fitted_model = None
+        self.result_label.config(text="Estimated concentration: ")
+        self.clear_bulk_data(update_status=False)
+        self.ax.clear()
+        self.canvas.draw()
+
+    def validate_standard_data(self, x, y):
+        """Validate, sort, and normalize standard curve input data."""
+        if len(x) < 3:
+            raise ValueError("At least 3 data points are required for curve fitting.")
+
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+            raise ValueError("All concentration and OD values must be finite numbers.")
+
+        if np.any(x <= 0):
+            raise ValueError("All concentrations must be greater than 0 for log-scale curve fitting.")
+
+        if len(np.unique(x)) < 3:
+            raise ValueError("At least 3 distinct concentration values are required.")
+
+        order = np.argsort(x)
+        return x[order], y[order]
+
+    def set_standard_data(self, x, y, source_label):
+        """Store validated standard data and clear stale fit results."""
+        self.x, self.y = self.validate_standard_data(x, y)
+        self.reset_analysis_state()
+        self.status_bar.config(text=f"Using {len(self.x)} data points from {source_label}")
+
+    def find_matching_column(self, columns, kind):
+        """Select the best matching concentration or OD column from a CSV."""
+        normalized = {col: normalize_column_name(col) for col in columns}
+
+        if kind == 'concentration':
+            preferred = (
+                'concentration',
+                'concentrations',
+                'conc',
+                'stdconcentration',
+                'standardconcentration',
+            )
+            contains_tokens = ('concentration', 'conc')
+        else:
+            preferred = (
+                'od',
+                'odvalue',
+                'opticaldensity',
+                'absorbance',
+                'absorbancevalue',
+                'abs',
+            )
+            contains_tokens = ('opticaldensity', 'absorbance', 'od')
+
+        for target in preferred:
+            for col, norm in normalized.items():
+                if norm == target:
+                    return col
+
+        for col, norm in normalized.items():
+            if any(token in norm for token in contains_tokens):
+                return col
+
+        return None
+
+    def solve_concentration_from_od(self, od_value):
+        """Estimate concentration within the fitted calibration range."""
+        if self.popt is None or self.x is None:
+            raise ValueError("Please fit the curve first.")
+
+        if not np.isfinite(od_value):
+            raise ValueError("OD value must be numeric.")
+
+        model_func = self.get_fitted_model_function()
+        x_low = float(np.min(self.x))
+        x_high = float(np.max(self.x))
+
+        y_low = float(model_func(x_low, *self.popt))
+        y_high = float(model_func(x_high, *self.popt))
+        y_min = min(y_low, y_high)
+        y_max = max(y_low, y_high)
+
+        if od_value < y_min or od_value > y_max:
+            raise ValueError(
+                f"OD value is outside the fitted calibration range ({y_min:.4f} to {y_max:.4f})."
+            )
+
+        residual = lambda conc: model_func(conc, *self.popt) - od_value
+        conc = brentq(residual, x_low, x_high)
+
+        if not np.isfinite(conc) or conc <= 0:
+            raise ValueError("Estimated concentration is outside the valid calibration range.")
+
+        return conc
     
     def create_widgets(self):
         """Create all interface components"""
+        self.setup_menu()
+
         # Main container
         self.main_frame = ttk.Frame(self.root, style='Card.TFrame', padding=15)
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
@@ -190,6 +326,16 @@ class ELISAApplication:
                                   relief=tk.SUNKEN,
                                   anchor=tk.W)
         self.status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+    def setup_menu(self):
+        """Create the application menu."""
+        menu_bar = tk.Menu(self.root)
+        help_menu = tk.Menu(menu_bar, tearoff=0)
+        help_menu.add_command(label="About", command=self.show_about)
+        help_menu.add_command(label="License", command=self.show_license)
+        help_menu.add_command(label="User Guide", command=self.show_readme)
+        menu_bar.add_cascade(label="Help", menu=help_menu)
+        self.root.config(menu=menu_bar)
     
     def setup_data_tab(self):
         """Data input tab"""
@@ -242,19 +388,31 @@ class ELISAApplication:
         """Analysis controls tab"""
         analysis_tab = ttk.Frame(self.notebook)
         self.notebook.add(analysis_tab, text="Analysis")
-        
+
+        analysis_tab.columnconfigure(0, weight=0)
+        analysis_tab.columnconfigure(1, weight=1)
+        analysis_tab.rowconfigure(0, weight=1)
+
+        control_frame = ttk.Frame(analysis_tab)
+        control_frame.grid(row=0, column=0, sticky="ns", padx=(10, 5), pady=10)
+
+        results_frame = ttk.Frame(analysis_tab)
+        results_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
+        results_frame.columnconfigure(0, weight=1)
+        results_frame.rowconfigure(2, weight=1)
+
         # Model selection
-        model_frame = ttk.LabelFrame(analysis_tab, text="Model Selection")
-        model_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+        model_frame = ttk.LabelFrame(control_frame, text="Model Selection")
+        model_frame.pack(fill=tk.X, pady=(0, 5))
+
         ttk.Radiobutton(model_frame, text="4-Parameter Logistic (4PL)", 
                        variable=self.model_var, value='4PL').pack(anchor=tk.W, padx=5, pady=2)
         ttk.Radiobutton(model_frame, text="3-Parameter Logistic (3PL)", 
                        variable=self.model_var, value='3PL').pack(anchor=tk.W, padx=5, pady=2)
         
         # Plot options
-        opt_frame = ttk.LabelFrame(analysis_tab, text="Plot Options")
-        opt_frame.pack(fill=tk.X, padx=10, pady=5)
+        opt_frame = ttk.LabelFrame(control_frame, text="Plot Options")
+        opt_frame.pack(fill=tk.X, pady=5)
         
         ttk.Checkbutton(opt_frame, text="Show Formula",
                        variable=self.show_formula).pack(anchor=tk.W, padx=5, pady=2)
@@ -262,13 +420,13 @@ class ELISAApplication:
                        variable=self.show_r2).pack(anchor=tk.W, padx=5, pady=2)
         
         # Fit button
-        ttk.Button(analysis_tab, text="Fit Curve", 
+        ttk.Button(control_frame, text="Fit Curve", 
                   command=self.fit_curve,
-                  style='Accent.TButton').pack(pady=10)
+                  style='Accent.TButton').pack(fill=tk.X, pady=10)
         
         # Unknown concentration estimation
-        unknown_frame = ttk.LabelFrame(analysis_tab, text="Concentration Estimation")
-        unknown_frame.pack(fill=tk.X, padx=10, pady=5)
+        unknown_frame = ttk.LabelFrame(control_frame, text="Concentration Estimation")
+        unknown_frame.pack(fill=tk.X, pady=5)
         
         ttk.Label(unknown_frame, text="Enter OD Value:").grid(row=0, column=0, padx=5, pady=2)
         self.od_entry = ttk.Entry(unknown_frame, width=15)
@@ -282,17 +440,21 @@ class ELISAApplication:
         self.result_label.grid(row=1, column=0, columnspan=3, pady=5)
         
         # Bulk OD estimation section
-        bulk_frame = ttk.LabelFrame(analysis_tab, text="Bulk OD Estimation")
-        bulk_frame.pack(fill=tk.X, padx=10, pady=5)
-        
-        ttk.Label(bulk_frame, text="Enter multiple OD values (one per line):").pack(pady=2)
-        
-        self.bulk_od_text = tk.Text(bulk_frame, height=5, width=40)
-        self.bulk_od_text.pack(pady=5)
+        bulk_frame = ttk.LabelFrame(results_frame, text="Bulk OD Estimation")
+        bulk_frame.grid(row=0, column=0, sticky="nsew")
+        bulk_frame.columnconfigure(0, weight=1)
+        bulk_frame.rowconfigure(3, weight=1)
+
+        ttk.Label(bulk_frame, text="Enter multiple OD values (one per line):").grid(
+            row=0, column=0, sticky="w", padx=8, pady=(6, 2)
+        )
+
+        self.bulk_od_text = tk.Text(bulk_frame, height=6, width=40)
+        self.bulk_od_text.grid(row=1, column=0, sticky="ew", padx=8, pady=5)
         
         # Bulk buttons
         bulk_btn_frame = ttk.Frame(bulk_frame)
-        bulk_btn_frame.pack(pady=5)
+        bulk_btn_frame.grid(row=2, column=0, sticky="w", padx=8, pady=5)
         
         ttk.Button(bulk_btn_frame, text="Estimate All", 
                   command=self.estimate_bulk_concentrations,
@@ -303,13 +465,24 @@ class ELISAApplication:
                   style='Danger.TButton').pack(side=tk.LEFT, padx=5)
         
         # Results display
-        self.bulk_results = tk.Text(bulk_frame, height=5, width=60, state='disabled')
-        self.bulk_results.pack(pady=5)
+        results_text_frame = ttk.Frame(bulk_frame)
+        results_text_frame.grid(row=3, column=0, sticky="nsew", padx=8, pady=(5, 8))
+        results_text_frame.columnconfigure(0, weight=1)
+        results_text_frame.rowconfigure(0, weight=1)
+
+        self.bulk_results = tk.Text(results_text_frame, height=14, width=70, state='disabled', wrap=tk.NONE)
+        bulk_scroll_y = ttk.Scrollbar(results_text_frame, orient="vertical", command=self.bulk_results.yview)
+        bulk_scroll_x = ttk.Scrollbar(results_text_frame, orient="horizontal", command=self.bulk_results.xview)
+        self.bulk_results.configure(yscrollcommand=bulk_scroll_y.set, xscrollcommand=bulk_scroll_x.set)
+
+        bulk_scroll_y.grid(row=0, column=1, sticky="ns")
+        bulk_scroll_x.grid(row=1, column=0, sticky="ew")
+        self.bulk_results.grid(row=0, column=0, sticky="nsew")
     
     def setup_visualization_tab(self):
         """Results visualization tab"""
         vis_tab = ttk.Frame(self.notebook)
-        self.notebook.add(vis_tab, text="Results")
+        self.notebook.add(vis_tab, text="Standard Curve")
         
         # Create plot
         self.fig = plt.Figure(figsize=(6, 4), dpi=100)
@@ -345,54 +518,198 @@ class ELISAApplication:
         self.plot_ylabel.grid(row=2, column=1, pady=2)
     
     def show_about(self):
-        """Show about dialog"""
+        """Show startup welcome dialog"""
+        if self.welcome_dialog is not None and self.welcome_dialog.winfo_exists():
+            self.welcome_dialog.deiconify()
+            self.welcome_dialog.lift()
+            self.welcome_dialog.focus_force()
+            return
+
         about = tk.Toplevel(self.root)
-        about.title("About ELISA Analyzer")
+        self.welcome_dialog = about
+        about.title("Welcome to CurveAnalyze")
         about.resizable(False, False)
         about.transient(self.root)
         about.grab_set()
-        
-        # Center window
-        w = 400
-        h = 350
-        ws = self.root.winfo_screenwidth()
-        hs = self.root.winfo_screenheight()
-        x = (ws/2) - (w/2)
-        y = (hs/2) - (h/2)
-        about.geometry(f"{w}x{h}+{int(x)}+{int(y)}")
+
+        def close_dialog():
+            if self.welcome_dialog is not None and self.welcome_dialog.winfo_exists():
+                self.welcome_dialog.destroy()
+            self.welcome_dialog = None
+
+        about.protocol("WM_DELETE_WINDOW", close_dialog)
         
         # Content
         content = ttk.Frame(about, padding=15)
         content.pack(fill=tk.BOTH, expand=True)
         
-        ttk.Label(content, text="ELISA Data Analyzer", 
+        ttk.Label(content, text="CurveAnalyze",
                  style='Title.TLabel').pack(pady=10)
         
-        ttk.Label(content, text="Version 2.0",
+        ttk.Label(content, text="Author: Abdul Halim Sadikin",
                  font=("Segoe UI", 10)).pack()
-        
-        info_text = """This application performs curve fitting and 
-concentration estimation for ELISA assays.
 
-Features:
-• 4PL and 3PL curve fitting
-• CSV data import with preview
-• Manual data entry
-• Interactive plot visualization
-• Single and bulk concentration estimation
-• High-resolution plot export
+        ttk.Label(content, text="©2025",
+                 font=("Segoe UI", 10)).pack()
 
-Mathematical Models:
-• 4PL: y = D + (A-D)/(1+(x/C)^B)
-• 3PL: y = A/(1+(x/C)^B)
+        info_text = """CurveAnalyze helps you fit ELISA standard curves and
+estimate unknown sample concentrations.
 
-Developed for biomedical research applications."""
+Quick start:
+1. Load standards from a CSV file or enter them manually.
+2. Choose a 4PL or 3PL model in the Analysis tab.
+3. Fit the curve and review the plotted result.
+4. Estimate single or bulk concentrations from OD values.
+
+Notes:
+- Concentrations must be greater than 0 because the curve is plotted on a log x-axis.
+- OD values outside the fitted calibration range are reported as out of range.
+
+Models:
+- 4PL: y = D + (A-D)/(1+(x/C)^B)
+- 3PL: y = A/(1+(x/C)^B)"""
         
-        ttk.Label(content, text=info_text, justify=tk.LEFT).pack(fill=tk.X, pady=10)
+        ttk.Label(
+            content,
+            text=info_text,
+            justify=tk.LEFT,
+            wraplength=455
+        ).pack(fill=tk.BOTH, expand=True, pady=10)
         
-        ttk.Button(content, text="Close", 
-                  command=about.destroy,
-                  style='Primary.TButton').pack(pady=10)
+        start_button = ttk.Button(content, text="Start", 
+                                 command=close_dialog,
+                                 style='Primary.TButton')
+        start_button.pack(pady=10)
+        start_button.focus_set()
+        about.bind("<Return>", lambda event: start_button.invoke())
+
+        # Size the dialog to its content, then center it on screen.
+        about.update_idletasks()
+        w = about.winfo_reqwidth()
+        h = about.winfo_reqheight()
+        ws = self.root.winfo_screenwidth()
+        hs = self.root.winfo_screenheight()
+        x = (ws - w) // 2
+        y = (hs - h) // 2
+        about.geometry(f"{w}x{h}+{x}+{y}")
+
+    def show_license(self):
+        """Show the license text in a scrollable dialog."""
+        if self.license_dialog is not None and self.license_dialog.winfo_exists():
+            self.license_dialog.deiconify()
+            self.license_dialog.lift()
+            self.license_dialog.focus_force()
+            return
+
+        license_dialog = tk.Toplevel(self.root)
+        self.license_dialog = license_dialog
+        license_dialog.title("CurveAnalyze License")
+        license_dialog.resizable(True, True)
+        license_dialog.transient(self.root)
+
+        def close_dialog():
+            if self.license_dialog is not None and self.license_dialog.winfo_exists():
+                self.license_dialog.destroy()
+            self.license_dialog = None
+
+        license_dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+
+        content = ttk.Frame(license_dialog, padding=15)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(content, text="License", style='Title.TLabel').pack(pady=(0, 10))
+
+        text_frame = ttk.Frame(content)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
+        license_text = tk.Text(text_frame, wrap=tk.WORD, height=20, width=80)
+        scroll_y = ttk.Scrollbar(text_frame, orient="vertical", command=license_text.yview)
+        license_text.configure(yscrollcommand=scroll_y.set)
+
+        scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        license_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        try:
+            with open("LICENSE", "r", encoding="utf-8") as f:
+                license_content = f.read()
+        except OSError as e:
+            license_content = f"Failed to load LICENSE file:\n{str(e)}"
+
+        license_text.insert("1.0", license_content)
+        license_text.config(state='disabled')
+
+        close_button = ttk.Button(content, text="Close", command=close_dialog, style='Primary.TButton')
+        close_button.pack(pady=(10, 0))
+        close_button.focus_set()
+        license_dialog.bind("<Return>", lambda event: close_button.invoke())
+
+        license_dialog.update_idletasks()
+        w = max(680, license_dialog.winfo_reqwidth())
+        h = max(500, license_dialog.winfo_reqheight())
+        ws = self.root.winfo_screenwidth()
+        hs = self.root.winfo_screenheight()
+        x = (ws - w) // 2
+        y = (hs - h) // 2
+        license_dialog.geometry(f"{w}x{h}+{x}+{y}")
+
+    def show_readme(self):
+        """Show the README text in a scrollable dialog."""
+        if self.readme_dialog is not None and self.readme_dialog.winfo_exists():
+            self.readme_dialog.deiconify()
+            self.readme_dialog.lift()
+            self.readme_dialog.focus_force()
+            return
+
+        readme_dialog = tk.Toplevel(self.root)
+        self.readme_dialog = readme_dialog
+        readme_dialog.title("CurveAnalyze README")
+        readme_dialog.resizable(True, True)
+        readme_dialog.transient(self.root)
+
+        def close_dialog():
+            if self.readme_dialog is not None and self.readme_dialog.winfo_exists():
+                self.readme_dialog.destroy()
+            self.readme_dialog = None
+
+        readme_dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+
+        content = ttk.Frame(readme_dialog, padding=15)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(content, text="README", style='Title.TLabel').pack(pady=(0, 10))
+
+        text_frame = ttk.Frame(content)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
+        readme_text = tk.Text(text_frame, wrap=tk.WORD, height=20, width=80)
+        scroll_y = ttk.Scrollbar(text_frame, orient="vertical", command=readme_text.yview)
+        readme_text.configure(yscrollcommand=scroll_y.set)
+
+        scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        readme_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        try:
+            with open("README.md", "r", encoding="utf-8") as f:
+                readme_content = f.read()
+        except OSError as e:
+            readme_content = f"Failed to load README.md file:\n{str(e)}"
+
+        readme_text.insert("1.0", readme_content)
+        readme_text.config(state='disabled')
+
+        close_button = ttk.Button(content, text="Close", command=close_dialog, style='Primary.TButton')
+        close_button.pack(pady=(10, 0))
+        close_button.focus_set()
+        readme_dialog.bind("<Return>", lambda event: close_button.invoke())
+
+        readme_dialog.update_idletasks()
+        w = max(680, readme_dialog.winfo_reqwidth())
+        h = max(500, readme_dialog.winfo_reqheight())
+        ws = self.root.winfo_screenwidth()
+        hs = self.root.winfo_screenheight()
+        x = (ws - w) // 2
+        y = (hs - h) // 2
+        readme_dialog.geometry(f"{w}x{h}+{x}+{y}")
     
     # ========== CORE FUNCTIONALITY ==========
     def load_csv(self):
@@ -408,46 +725,37 @@ Developed for biomedical research applications."""
             # Try reading with different delimiters
             try:
                 df = pd.read_csv(filepath)
-            except:
+            except (pd.errors.ParserError, UnicodeDecodeError):
                 try:
                     df = pd.read_csv(filepath, delimiter=';')
-                except:
+                except (pd.errors.ParserError, UnicodeDecodeError):
                     df = pd.read_csv(filepath, delimiter='\t')
                 
-            # Validate required columns (case insensitive)
-            cols = [col.lower() for col in df.columns]
-            conc_found = any('concentration' in col or 'conc' in col for col in cols)
-            od_found = any('od' in col or 'absorbance' in col or 'abs' in col for col in cols)
-            
-            if not (conc_found and od_found):
+            conc_col = self.find_matching_column(df.columns, 'concentration')
+            od_col = self.find_matching_column(df.columns, 'od')
+
+            if conc_col is None or od_col is None:
                 messagebox.showerror("Error", 
                     "CSV must contain columns with 'Concentration' (or 'Conc') and 'OD' (or 'Absorbance')")
                 return
-                
-            # Find the actual column names
-            conc_col = None
-            od_col = None
-            
-            for col in df.columns:
-                if 'concentration' in col.lower() or 'conc' in col.lower():
-                    conc_col = col
-                if 'od' in col.lower() or 'absorbance' in col.lower() or 'abs' in col.lower():
-                    od_col = col
             
             # Extract data and remove NaN values
             data = df[[conc_col, od_col]].dropna()
-            self.x = data[conc_col].values.astype(float)
-            self.y = data[od_col].values.astype(float)
+            self.set_standard_data(data[conc_col].values, data[od_col].values, f"CSV: {filepath}")
             
             # Update preview
             self.preview_text.delete(1.0, tk.END)
             preview_str = f"Columns found: {conc_col}, {od_col}\n"
-            preview_str += f"Data points: {len(data)}\n\n"
-            preview_str += data.head(10).to_string(index=False)
+            preview_str += f"Data points: {len(self.x)}\n\n"
+            preview_df = pd.DataFrame({
+                conc_col: self.x,
+                od_col: self.y,
+            })
+            preview_str += preview_df.head(10).to_string(index=False)
             self.preview_text.insert(tk.END, preview_str)
             
-            self.status_bar.config(text=f"Loaded {len(data)} data points from {filepath}")
-            messagebox.showinfo("Success", f"Successfully loaded {len(data)} data points")
+            self.status_bar.config(text=f"Loaded {len(self.x)} data points from {filepath}")
+            messagebox.showinfo("Success", f"Successfully loaded {len(self.x)} data points")
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load CSV:\n{str(e)}")
@@ -455,15 +763,12 @@ Developed for biomedical research applications."""
     def use_manual_data(self):
         """Use manually entered data"""
         x, y = self.data_table.get_data()
-        
-        if len(x) < 3:
-            messagebox.showwarning("Warning", "At least 3 data points required for curve fitting")
-            return
-            
-        self.x = x
-        self.y = y
-        self.status_bar.config(text=f"Using {len(x)} manually entered data points")
-        messagebox.showinfo("Success", f"Using {len(x)} entered data points")
+
+        try:
+            self.set_standard_data(x, y, "manual entry")
+            messagebox.showinfo("Success", f"Using {len(self.x)} entered data points")
+        except ValueError as e:
+            messagebox.showwarning("Warning", str(e))
     
     def fit_curve(self):
         """Perform curve fitting with selected model"""
@@ -473,6 +778,9 @@ Developed for biomedical research applications."""
             
         try:
             model = self.model_var.get()
+            self.popt = None
+            self.r_squared = None
+            self.fitted_model = None
             
             # Prepare bounds and initial guesses
             if model == '4PL':
@@ -501,13 +809,15 @@ Developed for biomedical research applications."""
 
             # Perform the curve fitting
             if model == '4PL':
-                self.popt, _ = curve_fit(four_param_logistic, self.x, self.y, 
+                self.popt, _ = curve_fit(four_param_logistic, self.x, self.y,
                                        p0=p0, bounds=bounds, maxfev=5000)
-                y_pred = four_param_logistic(self.x, *self.popt)
             else:  # 3PL
                 self.popt, _ = curve_fit(three_param_logistic, self.x, self.y,
                                        p0=p0, bounds=bounds, maxfev=5000)
-                y_pred = three_param_logistic(self.x, *self.popt)
+
+            self.fitted_model = model
+            model_func = self.get_fitted_model_function()
+            y_pred = model_func(self.x, *self.popt)
             
             # Calculate R-squared
             self.r_squared = calculate_r_squared(self.y, y_pred)
@@ -551,12 +861,9 @@ Developed for biomedical research applications."""
         x_min, x_max = min(self.x), max(self.x)
         x_fit = np.logspace(np.log10(x_min), np.log10(x_max), 200)
         
-        if self.model_var.get() == '4PL':
-            y_fit = four_param_logistic(x_fit, *self.popt)
-        else:
-            y_fit = three_param_logistic(x_fit, *self.popt)
+        y_fit = self.get_fitted_model_function()(x_fit, *self.popt)
             
-        self.ax.plot(x_fit, y_fit, 'b-', linewidth=2, label=f'{self.model_var.get()} Fit')
+        self.ax.plot(x_fit, y_fit, 'b-', linewidth=2, label=f'{self.fitted_model} Fit')
         
         # Format plot
         self.ax.set_xscale('log')
@@ -570,7 +877,7 @@ Developed for biomedical research applications."""
         annotations = []
         
         if self.show_formula.get():
-            if self.model_var.get() == '4PL':
+            if self.fitted_model == '4PL':
                 formula = r'$y = D + \frac{A-D}{1+(x/C)^B}$'
                 params = f"A = {self.popt[0]:.4f}\nB = {self.popt[1]:.4f}\n"
                 params += f"C = {self.popt[2]:.4f}\nD = {self.popt[3]:.4f}"
@@ -600,28 +907,27 @@ Developed for biomedical research applications."""
             return
             
         try:
-            od_value = float(self.od_entry.get())
+            od_text = self.od_entry.get().strip()
+
+            try:
+                od_value = float(od_text)
+            except ValueError:
+                messagebox.showerror("Error", "Please enter a valid numeric OD value")
+                return
             
             if od_value <= 0:
                 messagebox.showerror("Error", "OD value must be positive")
                 return
+
+            conc = self.solve_concentration_from_od(od_value)
+            self.result_label.config(text=f"Estimated concentration: {conc:.6f}")
+            self.status_bar.config(text=f"Concentration: {conc:.6f} (OD: {od_value:.4f})")
             
-            # Get reasonable initial guess for concentration
-            x0 = np.median(self.x) if len(self.x) > 0 else 1.0
-            
-            if self.model_var.get() == '4PL':
-                conc = fsolve(lambda x: four_param_logistic(x, *self.popt) - od_value, x0=x0)[0]
-            else:
-                conc = fsolve(lambda x: three_param_logistic(x, *self.popt) - od_value, x0=x0)[0]
-                
-            if conc < 0:
-                self.result_label.config(text="Estimated concentration: Outside curve range")
-            else:
-                self.result_label.config(text=f"Estimated concentration: {conc:.6f}")
-                self.status_bar.config(text=f"Concentration: {conc:.6f} (OD: {od_value:.4f})")
-            
-        except ValueError:
-            messagebox.showerror("Error", "Please enter a valid numeric OD value")
+        except ValueError as e:
+            self.result_label.config(text="Estimated concentration: Out of calibration range")
+            messagebox.showerror("Error", str(e))
+        except RuntimeError as e:
+            messagebox.showerror("Error", f"Failed to estimate concentration:\n{str(e)}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to estimate concentration:\n{str(e)}")
     
@@ -655,20 +961,14 @@ Developed for biomedical research applications."""
             
             # Calculate concentrations
             results = []
-            x0 = np.median(self.x) if len(self.x) > 0 else 1.0
             
             for od in od_values:
                 try:
-                    if self.model_var.get() == '4PL':
-                        conc = fsolve(lambda x: four_param_logistic(x, *self.popt) - od, x0=x0)[0]
-                    else:
-                        conc = fsolve(lambda x: three_param_logistic(x, *self.popt) - od, x0=x0)[0]
-                    
-                    if conc < 0:
-                        results.append((od, "Out of range"))
-                    else:
-                        results.append((od, f"{conc:.6f}"))
-                except:
+                    conc = self.solve_concentration_from_od(od)
+                    results.append((od, f"{conc:.6f}"))
+                except ValueError:
+                    results.append((od, "Out of range"))
+                except RuntimeError:
                     results.append((od, "Error"))
             
             # Display results
@@ -688,17 +988,18 @@ Developed for biomedical research applications."""
         except Exception as e:
             messagebox.showerror("Error", f"Failed to process bulk OD values:\n{str(e)}")
     
-    def clear_bulk_data(self):
+    def clear_bulk_data(self, update_status=True):
         """Clear bulk OD input and results"""
         self.bulk_od_text.delete(1.0, tk.END)
         self.bulk_results.config(state='normal')
         self.bulk_results.delete(1.0, tk.END)
         self.bulk_results.config(state='disabled')
-        self.status_bar.config(text="Bulk data cleared")
+        if update_status:
+            self.status_bar.config(text="Bulk data cleared")
     
     def save_plot(self):
         """Save the current plot to file"""
-        if not hasattr(self, 'ax') or len(self.ax.lines) == 0:
+        if self.popt is None:
             messagebox.showwarning("Warning", "No plot to save. Please fit a curve first.")
             return
             
@@ -732,10 +1033,8 @@ if __name__ == "__main__":
     # Set window icon (optional)
     try:
         root.iconbitmap('icon.ico')  # Add an icon file if available
-    except:
+    except tk.TclError:
         pass
     
     app = ELISAApplication(root)
     root.mainloop()
-
-
