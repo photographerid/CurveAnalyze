@@ -1,11 +1,15 @@
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from scipy.optimize import brentq, curve_fit
+
+APP_DIR = Path(__file__).resolve().parent
+THREE_PL_D = 0.0
 
 # ========== MATHEMATICAL FUNCTIONS ==========
 def four_param_logistic(x, A, B, C, D):
@@ -13,10 +17,10 @@ def four_param_logistic(x, A, B, C, D):
     with np.errstate(invalid='ignore', divide='ignore'):
         return D + (A - D) / (1 + (x / C)**B)
 
-def three_param_logistic(x, A, B, C):
-    """3-Parameter Logistic Function (D fixed at 0)"""
+def three_param_logistic(x, A, B, C, D=THREE_PL_D):
+    """3-Parameter Logistic Function with D fixed at 0"""
     with np.errstate(invalid='ignore', divide='ignore'):
-        return A / (1 + (x / C)**B)
+        return D + (A - D) / (1 + (C / x)**B)
 
 def calculate_r_squared(y_true, y_pred):
     """Calculate R-squared value"""
@@ -285,18 +289,33 @@ class ELISAApplication:
         x_low = float(np.min(self.x))
         x_high = float(np.max(self.x))
 
-        y_low = float(model_func(x_low, *self.popt))
-        y_high = float(model_func(x_high, *self.popt))
-        y_min = min(y_low, y_high)
-        y_max = max(y_low, y_high)
+        if self.fitted_model == '3PL':
+            fit_x_low = max(np.nextafter(0.0, 1.0), x_low * 1e-9)
+            fit_x_high = max(x_high * 1e9, float(self.popt[2]) * 1e6, fit_x_low * 10)
+            y_min = min(THREE_PL_D, float(self.popt[0]))
+            y_max = max(THREE_PL_D, float(self.popt[0]))
+        else:
+            fit_x_low = x_low
+            fit_x_high = x_high
+            y_low = float(model_func(fit_x_low, *self.popt))
+            y_high = float(model_func(fit_x_high, *self.popt))
+            y_min = min(y_low, y_high)
+            y_max = max(y_low, y_high)
 
         if od_value < y_min or od_value > y_max:
             raise ValueError(
                 f"OD value is outside the fitted calibration range ({y_min:.4f} to {y_max:.4f})."
             )
 
+        if self.fitted_model == '3PL' and np.isclose(od_value, THREE_PL_D):
+            if self.popt[1] > 0:
+                return 0.0
+            raise ValueError(
+                "OD value is at the 3PL lower asymptote and does not correspond to a finite concentration."
+            )
+
         residual = lambda conc: model_func(conc, *self.popt) - od_value
-        conc = brentq(residual, x_low, x_high)
+        conc = brentq(residual, fit_x_low, fit_x_high)
 
         if not np.isfinite(conc) or conc <= 0:
             raise ValueError("Estimated concentration is outside the valid calibration range.")
@@ -326,6 +345,33 @@ class ELISAApplication:
                                   relief=tk.SUNKEN,
                                   anchor=tk.W)
         self.status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+    def show_text_context_menu(self, event, widget, editable=True):
+        """Show a right-click context menu for text widgets."""
+        widget.focus_force()
+        menu = tk.Menu(widget, tearoff=0)
+
+        if editable:
+            menu.add_command(label="Cut", command=lambda: widget.event_generate("<<Cut>>"))
+
+        menu.add_command(label="Copy", command=lambda: widget.event_generate("<<Copy>>"))
+
+        if editable:
+            menu.add_command(label="Paste", command=lambda: widget.event_generate("<<Paste>>"))
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def bind_text_context_menu(self, widget, editable=True):
+        """Bind right-click context menu behavior to a text widget."""
+        widget.bind(
+            "<Button-3>",
+            lambda event, target=widget, can_edit=editable: self.show_text_context_menu(
+                event, target, can_edit
+            ),
+        )
 
     def setup_menu(self):
         """Create the application menu."""
@@ -451,6 +497,7 @@ class ELISAApplication:
 
         self.bulk_od_text = tk.Text(bulk_frame, height=6, width=40)
         self.bulk_od_text.grid(row=1, column=0, sticky="ew", padx=8, pady=5)
+        self.bind_text_context_menu(self.bulk_od_text, editable=True)
         
         # Bulk buttons
         bulk_btn_frame = ttk.Frame(bulk_frame)
@@ -471,6 +518,7 @@ class ELISAApplication:
         results_text_frame.rowconfigure(0, weight=1)
 
         self.bulk_results = tk.Text(results_text_frame, height=14, width=70, state='disabled', wrap=tk.NONE)
+        self.bind_text_context_menu(self.bulk_results, editable=False)
         bulk_scroll_y = ttk.Scrollbar(results_text_frame, orient="vertical", command=self.bulk_results.yview)
         bulk_scroll_x = ttk.Scrollbar(results_text_frame, orient="horizontal", command=self.bulk_results.xview)
         self.bulk_results.configure(yscrollcommand=bulk_scroll_y.set, xscrollcommand=bulk_scroll_x.set)
@@ -567,7 +615,7 @@ Notes:
 
 Models:
 - 4PL: y = D + (A-D)/(1+(x/C)^B)
-- 3PL: y = A/(1+(x/C)^B)"""
+- 3PL: y = D + (A-D)/(1+(C/x)^B), with D = 0"""
         
         ttk.Label(
             content,
@@ -630,7 +678,7 @@ Models:
         license_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         try:
-            with open("LICENSE", "r", encoding="utf-8") as f:
+            with open(APP_DIR / "LICENSE", "r", encoding="utf-8") as f:
                 license_content = f.read()
         except OSError as e:
             license_content = f"Failed to load LICENSE file:\n{str(e)}"
@@ -689,7 +737,7 @@ Models:
         readme_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         try:
-            with open("README.md", "r", encoding="utf-8") as f:
+            with open(APP_DIR / "README.md", "r", encoding="utf-8") as f:
                 readme_content = f.read()
         except OSError as e:
             readme_content = f"Failed to load README.md file:\n{str(e)}"
@@ -784,28 +832,40 @@ Models:
             
             # Prepare bounds and initial guesses
             if model == '4PL':
+                increasing = self.y[-1] >= self.y[0]
+                slope_guess = -1.0 if increasing else 1.0
+
                 # 4PL parameter order: [A, B, C, D]
                 p0 = [
                     max(self.y),           # A (upper asymptote)
-                    1.0,                   # B (Hill slope)
+                    slope_guess,           # B (Hill slope)
                     np.median(self.x),     # C (inflection point)
                     min(self.y)            # D (lower asymptote)
                 ]
                 bounds = (
-                    [0, 0.1, 0, 0],                    # Lower bounds
+                    [0, -10, 0, 0],                    # Lower bounds
                     [np.inf, 10, np.inf, np.inf]       # Upper bounds
                 )
             else:  # 3PL
+                increasing = self.y[-1] >= self.y[0]
+                slope_guess = 1.0 if increasing else -1.0
+
                 # 3PL parameter order: [A, B, C] (D fixed at 0)
                 p0 = [
                     max(self.y),           # A (upper asymptote)
-                    1.0,                   # B (Hill slope)
+                    slope_guess,           # B (Hill slope)
                     np.median(self.x)      # C (inflection point)
                 ]
-                bounds = (
-                    [0, 0.1, 0],           # Lower bounds
-                    [np.inf, 10, np.inf]   # Upper bounds
-                )
+                if increasing:
+                    bounds = (
+                        [0, 0.1, 0],           # Lower bounds
+                        [np.inf, 10, np.inf]   # Upper bounds
+                    )
+                else:
+                    bounds = (
+                        [0, -10, 0],           # Lower bounds
+                        [np.inf, -0.1, np.inf] # Upper bounds
+                    )
 
             # Perform the curve fitting
             if model == '4PL':
@@ -831,6 +891,9 @@ Models:
             
             for i, (param, label) in enumerate(zip(self.popt, param_labels[:len(self.popt)])):
                 param_text += f"{label}: {param:.6f}\n"
+
+            if model == '3PL':
+                param_text += f"D (Lower): {THREE_PL_D:.6f}\n"
             
             param_text += f"\nR² = {self.r_squared:.6f}"
             
@@ -882,9 +945,9 @@ Models:
                 params = f"A = {self.popt[0]:.4f}\nB = {self.popt[1]:.4f}\n"
                 params += f"C = {self.popt[2]:.4f}\nD = {self.popt[3]:.4f}"
             else:
-                formula = r'$y = \frac{A}{1+(x/C)^B}$'
+                formula = r'$y = D + \frac{A-D}{1+(C/x)^B}$'
                 params = f"A = {self.popt[0]:.4f}\nB = {self.popt[1]:.4f}\n"
-                params += f"C = {self.popt[2]:.4f}"
+                params += f"C = {self.popt[2]:.4f}\nD = {THREE_PL_D:.4f}"
             
             annotations.extend([formula, params])
         
@@ -915,8 +978,8 @@ Models:
                 messagebox.showerror("Error", "Please enter a valid numeric OD value")
                 return
             
-            if od_value <= 0:
-                messagebox.showerror("Error", "OD value must be positive")
+            if od_value < 0:
+                messagebox.showerror("Error", "OD value must be 0 or positive")
                 return
 
             conc = self.solve_concentration_from_od(od_value)
