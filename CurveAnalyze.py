@@ -2,6 +2,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
+import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -10,6 +11,7 @@ from scipy.optimize import brentq, curve_fit
 
 APP_DIR = Path(__file__).resolve().parent
 THREE_PL_D = 0.0
+APP_NAME = "ELISA Data Analyzer"
 
 # ========== MATHEMATICAL FUNCTIONS ==========
 def four_param_logistic(x, A, B, C, D):
@@ -163,6 +165,22 @@ class DataEntryTable(ttk.Frame):
                 
         return np.array(concentrations), np.array(od_values)
 
+    def set_data(self, concentrations, od_values):
+        """Populate the table with concentration and OD values."""
+        target_rows = max(1, len(concentrations), len(od_values))
+
+        while len(self.conc_vars) < target_rows:
+            self.add_row(len(self.conc_vars) + 1)
+
+        while len(self.conc_vars) > target_rows:
+            self.remove_row()
+
+        for index in range(target_rows):
+            conc_value = concentrations[index] if index < len(concentrations) else ""
+            od_value = od_values[index] if index < len(od_values) else ""
+            self.conc_vars[index].set("" if conc_value == "" else str(conc_value))
+            self.od_vars[index].set("" if od_value == "" else str(od_value))
+
 # ========== MAIN APPLICATION ==========
 class ELISAApplication:
     def __init__(self, root):
@@ -171,7 +189,7 @@ class ELISAApplication:
         self.style.configure_styles()
         
         # Configure main window
-        self.root.title("ELISA Data Analyzer")
+        self.root.title(APP_NAME)
         self.root.geometry("1100x750")
         self.root.configure(bg=self.style.bg_color)
         
@@ -184,12 +202,14 @@ class ELISAApplication:
         self.welcome_dialog = None
         self.license_dialog = None
         self.readme_dialog = None
+        self.current_project_path = None
         self.model_var = tk.StringVar(value='4PL')
         self.show_formula = tk.BooleanVar(value=True)
         self.show_r2 = tk.BooleanVar(value=True)
         
         # Build UI
         self.create_widgets()
+        self.bind_shortcuts()
         
         # Show about dialog on first run
         self.show_about()
@@ -197,6 +217,13 @@ class ELISAApplication:
     def get_model_function(self):
         """Return the currently selected logistic model."""
         return four_param_logistic if self.model_var.get() == '4PL' else three_param_logistic
+
+    def update_window_title(self):
+        """Show the current project name in the main window title bar."""
+        if self.current_project_path:
+            self.root.title(Path(self.current_project_path).stem)
+        else:
+            self.root.title(APP_NAME)
 
     def get_fitted_model_function(self):
         """Return the logistic model used by the current fit."""
@@ -376,12 +403,179 @@ class ELISAApplication:
     def setup_menu(self):
         """Create the application menu."""
         menu_bar = tk.Menu(self.root)
+
+        file_menu = tk.Menu(menu_bar, tearoff=0)
+        file_menu.add_command(label="Save", command=self.save_project, accelerator="Ctrl+S")
+        file_menu.add_command(label="Save As...", command=self.save_project_as)
+        file_menu.add_command(label="Load Project", command=self.load_project, accelerator="Ctrl+O")
+        menu_bar.add_cascade(label="File", menu=file_menu)
+
         help_menu = tk.Menu(menu_bar, tearoff=0)
         help_menu.add_command(label="About", command=self.show_about)
         help_menu.add_command(label="License", command=self.show_license)
         help_menu.add_command(label="User Guide", command=self.show_readme)
         menu_bar.add_cascade(label="Help", menu=help_menu)
         self.root.config(menu=menu_bar)
+
+    def bind_shortcuts(self):
+        """Bind application keyboard shortcuts."""
+        self.root.bind_all("<Control-s>", lambda event: self.save_project())
+        self.root.bind_all("<Control-o>", lambda event: self.load_project())
+
+    def choose_project_save_path(self):
+        """Prompt for a project file path."""
+        return filedialog.asksaveasfilename(
+            title="Save Project As",
+            defaultextension=".curvealyze.json",
+            filetypes=[
+                ("CurveAnalyze Project", "*.curvealyze.json"),
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
+        )
+
+    def get_project_state(self):
+        """Collect the current application state for project save/load."""
+        return {
+            "project_version": 1,
+            "data_table": {
+                "concentrations": [var.get() for var in self.data_table.conc_vars],
+                "od_values": [var.get() for var in self.data_table.od_vars],
+            },
+            "standard_data": {
+                "x": None if self.x is None else self.x.tolist(),
+                "y": None if self.y is None else self.y.tolist(),
+            },
+            "analysis": {
+                "selected_model": self.model_var.get(),
+                "fitted_model": self.fitted_model,
+                "show_formula": self.show_formula.get(),
+                "show_r2": self.show_r2.get(),
+                "popt": None if self.popt is None else self.popt.tolist(),
+                "r_squared": self.r_squared,
+                "single_od": self.od_entry.get(),
+                "single_result": self.result_label.cget("text"),
+                "bulk_od_text": self.bulk_od_text.get("1.0", tk.END),
+                "bulk_results_text": self.bulk_results.get("1.0", tk.END),
+            },
+            "plot": {
+                "title": self.plot_title.get(),
+                "xlabel": self.plot_xlabel.get(),
+                "ylabel": self.plot_ylabel.get(),
+            },
+        }
+
+    def restore_project_state(self, state):
+        """Restore the application state from a saved project."""
+        data_table = state.get("data_table", {})
+        concentrations = data_table.get("concentrations", [])
+        od_values = data_table.get("od_values", [])
+        self.data_table.set_data(concentrations, od_values)
+
+        plot_state = state.get("plot", {})
+        self.plot_title.delete(0, tk.END)
+        self.plot_title.insert(0, plot_state.get("title", "ELISA Standard Curve"))
+        self.plot_xlabel.delete(0, tk.END)
+        self.plot_xlabel.insert(0, plot_state.get("xlabel", "Concentration"))
+        self.plot_ylabel.delete(0, tk.END)
+        self.plot_ylabel.insert(0, plot_state.get("ylabel", "OD Value"))
+
+        analysis_state = state.get("analysis", {})
+        self.model_var.set(analysis_state.get("selected_model", "4PL"))
+        self.show_formula.set(analysis_state.get("show_formula", True))
+        self.show_r2.set(analysis_state.get("show_r2", True))
+        self.od_entry.delete(0, tk.END)
+        self.od_entry.insert(0, analysis_state.get("single_od", ""))
+        self.result_label.config(text=analysis_state.get("single_result", "Estimated concentration: "))
+
+        self.bulk_od_text.delete("1.0", tk.END)
+        self.bulk_od_text.insert("1.0", analysis_state.get("bulk_od_text", ""))
+
+        self.bulk_results.config(state='normal')
+        self.bulk_results.delete("1.0", tk.END)
+        self.bulk_results.insert("1.0", analysis_state.get("bulk_results_text", ""))
+        self.bulk_results.config(state='disabled')
+
+        standard_data = state.get("standard_data", {})
+        x_values = standard_data.get("x")
+        y_values = standard_data.get("y")
+
+        self.popt = None
+        self.r_squared = None
+        self.fitted_model = None
+
+        if x_values is not None and y_values is not None:
+            self.x = np.asarray(x_values, dtype=float)
+            self.y = np.asarray(y_values, dtype=float)
+
+            popt = analysis_state.get("popt")
+            fitted_model = analysis_state.get("fitted_model")
+            if popt is not None and fitted_model in {"4PL", "3PL"}:
+                self.popt = np.asarray(popt, dtype=float)
+                self.fitted_model = fitted_model
+                self.r_squared = analysis_state.get("r_squared")
+                self.update_plot()
+            else:
+                self.ax.clear()
+                self.canvas.draw()
+        else:
+            self.x = None
+            self.y = None
+            self.ax.clear()
+            self.canvas.draw()
+
+    def save_project(self):
+        """Save the current analysis state to the current project file."""
+        filepath = self.current_project_path or self.choose_project_save_path()
+
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(self.get_project_state(), f, indent=2)
+
+            self.current_project_path = filepath
+            self.update_window_title()
+            self.status_bar.config(text=f"Project saved: {filepath}")
+            messagebox.showinfo("Success", f"Project saved successfully to:\n{filepath}")
+        except OSError as e:
+            messagebox.showerror("Error", f"Failed to save project:\n{str(e)}")
+
+    def save_project_as(self):
+        """Save the current analysis state to a new project file."""
+        filepath = self.choose_project_save_path()
+        if not filepath:
+            return
+
+        self.current_project_path = filepath
+        self.save_project()
+
+    def load_project(self):
+        """Load a saved analysis state from a project file."""
+        filepath = filedialog.askopenfilename(
+            title="Load Project",
+            filetypes=[
+                ("CurveAnalyze Project", "*.curvealyze.json"),
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
+        )
+
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                state = json.load(f)
+
+            self.restore_project_state(state)
+            self.current_project_path = filepath
+            self.update_window_title()
+            self.status_bar.config(text=f"Project loaded: {filepath}")
+            messagebox.showinfo("Success", f"Project loaded successfully from:\n{filepath}")
+        except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+            messagebox.showerror("Error", f"Failed to load project:\n{str(e)}")
     
     def setup_data_tab(self):
         """Data input tab"""
