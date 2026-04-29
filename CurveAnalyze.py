@@ -2,6 +2,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
+import csv
 import json
 import numpy as np
 import pandas as pd
@@ -12,6 +13,8 @@ from scipy.optimize import brentq, curve_fit
 APP_DIR = Path(__file__).resolve().parent
 THREE_PL_D = 0.0
 APP_NAME = "ELISA Data Analyzer"
+RECENT_PROJECTS_FILE = APP_DIR / "recent_projects.json"
+MAX_RECENT_PROJECTS = 5
 
 # ========== MATHEMATICAL FUNCTIONS ==========
 def four_param_logistic(x, A, B, C, D):
@@ -38,14 +41,19 @@ def normalize_column_name(name):
 # ========== STYLE MANAGER ==========
 class StyleManager:
     def __init__(self):
-        self.bg_color = "#f5f6f8"
+        self.bg_color = "#eef2f7"
         self.card_color = "#ffffff"
-        self.primary_color = "#4a6fa5"
-        self.primary_hover_color = "#3e5e8c"
-        self.accent_color = "#28a745"
-        self.accent_hover_color = "#218838"
-        self.error_color = "#dc3545"
-        self.error_hover_color = "#c82333"
+        self.panel_color = "#f8fafc"
+        self.border_color = "#d5dde8"
+        self.primary_color = "#315c8f"
+        self.primary_hover_color = "#284d79"
+        self.accent_color = "#2a8f6a"
+        self.accent_hover_color = "#217456"
+        self.error_color = "#c94c4c"
+        self.error_hover_color = "#ab3d3d"
+        self.text_color = "#1f2d3d"
+        self.muted_text_color = "#5f6f82"
+        self.input_bg = "#fbfcfe"
         self.font_family = "Segoe UI"
         
     def configure_styles(self):
@@ -55,50 +63,128 @@ class StyleManager:
         # General styles
         style.configure('.', 
                       background=self.bg_color,
+                      foreground=self.text_color,
                       font=(self.font_family, 10))
         
         # Frame styles
         style.configure('Card.TFrame', 
                       background=self.card_color,
                       borderwidth=1,
-                      bordercolor='#e0e0e0')
+                      relief='flat',
+                      bordercolor=self.border_color)
+
+        style.configure('Section.TFrame',
+                      background=self.panel_color,
+                      borderwidth=1,
+                      relief='flat',
+                      bordercolor=self.border_color)
         
         # Button styles
         style.configure('Primary.TButton',
                       foreground='white',
                       background=self.primary_color,
-                      borderwidth=0,
-                      padding=6)
+                      borderwidth=1,
+                      relief='raised',
+                      bordercolor="#5d7ea8",
+                      lightcolor="#5d7ea8",
+                      darkcolor=self.primary_hover_color,
+                      focusthickness=0,
+                      padding=(16, 6))
         style.map('Primary.TButton',
                   foreground=[('disabled', '#f0f0f0'), ('active', 'white'), ('pressed', 'white')],
-                  background=[('disabled', '#b8c4d6'), ('active', self.primary_hover_color), ('pressed', self.primary_hover_color)])
+                  background=[('disabled', '#b8c4d6'), ('active', self.primary_hover_color), ('pressed', self.primary_hover_color)],
+                  bordercolor=[('disabled', '#b8c4d6'), ('active', self.primary_hover_color), ('pressed', self.primary_hover_color)],
+                  lightcolor=[('disabled', '#b8c4d6'), ('active', self.primary_hover_color), ('pressed', self.primary_hover_color)],
+                  darkcolor=[('disabled', '#b8c4d6'), ('active', self.primary_hover_color), ('pressed', self.primary_hover_color)])
         
         style.configure('Accent.TButton',
                       foreground='white',
                       background=self.accent_color,
-                      borderwidth=0,
-                      padding=6)
+                      borderwidth=1,
+                      relief='raised',
+                      bordercolor="#56a586",
+                      lightcolor="#56a586",
+                      darkcolor=self.accent_hover_color,
+                      focusthickness=0,
+                      padding=(16, 6))
         style.map('Accent.TButton',
                   foreground=[('disabled', '#f0f0f0'), ('active', 'white'), ('pressed', 'white')],
-                  background=[('disabled', '#b7ddc0'), ('active', self.accent_hover_color), ('pressed', self.accent_hover_color)])
+                  background=[('disabled', '#b7ddc0'), ('active', self.accent_hover_color), ('pressed', self.accent_hover_color)],
+                  bordercolor=[('disabled', '#b7ddc0'), ('active', self.accent_hover_color), ('pressed', self.accent_hover_color)],
+                  lightcolor=[('disabled', '#b7ddc0'), ('active', self.accent_hover_color), ('pressed', self.accent_hover_color)],
+                  darkcolor=[('disabled', '#b7ddc0'), ('active', self.accent_hover_color), ('pressed', self.accent_hover_color)])
         
         style.configure('Danger.TButton',
                       foreground='white',
                       background=self.error_color,
-                      borderwidth=0,
-                      padding=6)
+                      borderwidth=1,
+                      relief='raised',
+                      bordercolor="#d77777",
+                      lightcolor="#d77777",
+                      darkcolor=self.error_hover_color,
+                      focusthickness=0,
+                      padding=(16, 6))
         style.map('Danger.TButton',
                   foreground=[('disabled', '#f0f0f0'), ('active', 'white'), ('pressed', 'white')],
-                  background=[('disabled', '#e5b8bf'), ('active', self.error_hover_color), ('pressed', self.error_hover_color)])
+                  background=[('disabled', '#e5b8bf'), ('active', self.error_hover_color), ('pressed', self.error_hover_color)],
+                  bordercolor=[('disabled', '#e5b8bf'), ('active', self.error_hover_color), ('pressed', self.error_hover_color)],
+                  lightcolor=[('disabled', '#e5b8bf'), ('active', self.error_hover_color), ('pressed', self.error_hover_color)],
+                  darkcolor=[('disabled', '#e5b8bf'), ('active', self.error_hover_color), ('pressed', self.error_hover_color)])
         
         # Label styles
         style.configure('Title.TLabel',
-                      font=(self.font_family, 12, 'bold'),
+                      background=self.card_color,
+                      font=(self.font_family, 13, 'bold'),
                       foreground=self.primary_color)
         
         style.configure('Subtitle.TLabel',
+                      background=self.card_color,
                       font=(self.font_family, 10),
+                      foreground=self.muted_text_color)
+
+        style.configure('SectionTitle.TLabel',
+                      background=self.panel_color,
+                      font=(self.font_family, 10, 'bold'),
                       foreground=self.primary_color)
+
+        style.configure('TLabelframe',
+                      background=self.panel_color,
+                      borderwidth=1,
+                      relief='solid',
+                      bordercolor=self.border_color,
+                      padding=10)
+        style.configure('TLabelframe.Label',
+                      background=self.panel_color,
+                      font=(self.font_family, 10, 'bold'),
+                      foreground=self.primary_color)
+
+        style.configure('TNotebook',
+                      background=self.card_color,
+                      borderwidth=0,
+                      tabmargins=(4, 4, 4, 0))
+        style.configure('TNotebook.Tab',
+                      background="#dfe7f1",
+                      foreground=self.muted_text_color,
+                      padding=(16, 8),
+                      font=(self.font_family, 10, 'bold'))
+        style.map('TNotebook.Tab',
+                  background=[('selected', self.card_color), ('active', '#e9eef5')],
+                  foreground=[('selected', self.primary_color), ('active', self.text_color)])
+
+        style.configure('TEntry',
+                      fieldbackground=self.input_bg,
+                      foreground=self.text_color,
+                      bordercolor=self.border_color,
+                      lightcolor=self.border_color,
+                      darkcolor=self.border_color,
+                      padding=6)
+
+        style.configure('TCheckbutton',
+                      background=self.panel_color,
+                      foreground=self.text_color)
+        style.configure('TRadiobutton',
+                      background=self.panel_color,
+                      foreground=self.text_color)
 
 # ========== DATA ENTRY TABLE ==========
 class DataEntryTable(ttk.Frame):
@@ -106,10 +192,13 @@ class DataEntryTable(ttk.Frame):
         super().__init__(parent, *args, **kwargs)
         self.conc_vars = []
         self.od_vars = []
+        self.configure(style='Section.TFrame', padding=8)
+        self.columnconfigure(0, weight=1)
+        self.columnconfigure(1, weight=1)
         
         # Create header
-        ttk.Label(self, text="Concentration", width=15).grid(row=0, column=0, padx=5, pady=2)
-        ttk.Label(self, text="OD Value", width=15).grid(row=0, column=1, padx=5, pady=2)
+        ttk.Label(self, text="Concentration", style='SectionTitle.TLabel', width=15).grid(row=0, column=0, padx=8, pady=(4, 6), sticky='w')
+        ttk.Label(self, text="OD Value", style='SectionTitle.TLabel', width=15).grid(row=0, column=1, padx=8, pady=(4, 6), sticky='w')
         
         # Add initial rows
         for i in range(5):
@@ -203,6 +292,8 @@ class ELISAApplication:
         self.license_dialog = None
         self.readme_dialog = None
         self.current_project_path = None
+        self.last_saved_state = None
+        self.recent_projects = self.load_recent_projects()
         self.model_var = tk.StringVar(value='4PL')
         self.show_formula = tk.BooleanVar(value=True)
         self.show_r2 = tk.BooleanVar(value=True)
@@ -210,6 +301,7 @@ class ELISAApplication:
         # Build UI
         self.create_widgets()
         self.bind_shortcuts()
+        self.root.protocol("WM_DELETE_WINDOW", self.handle_app_close)
         
         # Show about dialog on first run
         self.show_about()
@@ -218,12 +310,113 @@ class ELISAApplication:
         """Return the currently selected logistic model."""
         return four_param_logistic if self.model_var.get() == '4PL' else three_param_logistic
 
+    def serialize_project_state(self):
+        """Serialize project state for unsaved-change detection."""
+        return json.dumps(self.get_project_state(), sort_keys=True)
+
+    def has_unsaved_changes(self):
+        """Return whether the current session should prompt for save."""
+        if self.current_project_path is None:
+            return True
+
+        if self.last_saved_state is None:
+            return True
+
+        return self.serialize_project_state() != self.last_saved_state
+
+    def handle_app_close(self):
+        """Prompt to save unsaved work before closing the application."""
+        if not self.confirm_discard_unsaved_changes("Do you want to save your project before closing?"):
+            return
+
+        self.root.destroy()
+
+    def confirm_discard_unsaved_changes(self, prompt_message):
+        """Prompt to save unsaved work before discarding the current session."""
+        if not self.has_unsaved_changes():
+            return True
+
+        response = messagebox.askyesnocancel("Save Project", prompt_message)
+
+        if response is None:
+            return False
+
+        if response:
+            return self.save_project(show_feedback=False)
+
+        return True
+
     def update_window_title(self):
         """Show the current project name in the main window title bar."""
         if self.current_project_path:
             self.root.title(Path(self.current_project_path).stem)
         else:
             self.root.title(APP_NAME)
+
+    def load_recent_projects(self):
+        """Load the recent project list from disk."""
+        try:
+            with open(RECENT_PROJECTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        return [str(path) for path in data[:MAX_RECENT_PROJECTS]]
+
+    def save_recent_projects(self):
+        """Persist the recent project list to disk."""
+        try:
+            with open(RECENT_PROJECTS_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.recent_projects[:MAX_RECENT_PROJECTS], f, indent=2)
+        except OSError:
+            pass
+
+    def add_recent_project(self, filepath):
+        """Add a project path to the recent-project list."""
+        normalized_path = str(Path(filepath))
+        self.recent_projects = [path for path in self.recent_projects if path != normalized_path]
+        self.recent_projects.insert(0, normalized_path)
+        self.recent_projects = self.recent_projects[:MAX_RECENT_PROJECTS]
+        self.save_recent_projects()
+        self.refresh_recent_projects_menu()
+
+    def remove_recent_project(self, filepath):
+        """Remove a missing or unwanted path from the recent-project list."""
+        normalized_path = str(Path(filepath))
+        self.recent_projects = [path for path in self.recent_projects if path != normalized_path]
+        self.save_recent_projects()
+        self.refresh_recent_projects_menu()
+
+    def refresh_recent_projects_menu(self):
+        """Rebuild the Recent Projects submenu."""
+        self.recent_projects_menu.delete(0, tk.END)
+
+        if not self.recent_projects:
+            self.recent_projects_menu.add_command(label="No recent projects", state=tk.DISABLED)
+            return
+
+        for filepath in self.recent_projects:
+            self.recent_projects_menu.add_command(
+                label=Path(filepath).name,
+                command=lambda target=filepath: self.open_recent_project(target),
+            )
+
+    def open_recent_project(self, filepath):
+        """Open a project from the recent-project list."""
+        if not self.confirm_discard_unsaved_changes(
+            "Do you want to save your current project before loading another one?"
+        ):
+            return
+
+        if not Path(filepath).exists():
+            messagebox.showerror("Error", f"Project file not found:\n{filepath}")
+            self.remove_recent_project(filepath)
+            return
+
+        self.load_project(filepath=filepath, prompt_to_save=False)
 
     def get_fitted_model_function(self):
         """Return the logistic model used by the current fit."""
@@ -370,6 +563,8 @@ class ELISAApplication:
         self.status_bar = ttk.Label(self.root, 
                                   text="Ready", 
                                   relief=tk.SUNKEN,
+                                  background="#dde5ef",
+                                  foreground=self.style.text_color,
                                   anchor=tk.W)
         self.status_bar.pack(fill=tk.X, side=tk.BOTTOM)
 
@@ -405,9 +600,14 @@ class ELISAApplication:
         menu_bar = tk.Menu(self.root)
 
         file_menu = tk.Menu(menu_bar, tearoff=0)
+        file_menu.add_command(label="New Project", command=self.new_project, accelerator="Ctrl+N")
+        file_menu.add_separator()
         file_menu.add_command(label="Save", command=self.save_project, accelerator="Ctrl+S")
         file_menu.add_command(label="Save As...", command=self.save_project_as)
         file_menu.add_command(label="Load Project", command=self.load_project, accelerator="Ctrl+O")
+        self.recent_projects_menu = tk.Menu(file_menu, tearoff=0)
+        file_menu.add_cascade(label="Recent Projects", menu=self.recent_projects_menu)
+        self.refresh_recent_projects_menu()
         menu_bar.add_cascade(label="File", menu=file_menu)
 
         help_menu = tk.Menu(menu_bar, tearoff=0)
@@ -419,8 +619,43 @@ class ELISAApplication:
 
     def bind_shortcuts(self):
         """Bind application keyboard shortcuts."""
+        self.root.bind_all("<Control-n>", lambda event: self.new_project())
         self.root.bind_all("<Control-s>", lambda event: self.save_project())
         self.root.bind_all("<Control-o>", lambda event: self.load_project())
+
+    def reset_to_new_project(self):
+        """Clear the current session back to a new blank project."""
+        self.current_project_path = None
+        self.last_saved_state = None
+        self.x = None
+        self.y = None
+        self.model_var.set('4PL')
+        self.show_formula.set(True)
+        self.show_r2.set(True)
+
+        self.data_table.set_data(["", "", "", "", ""], ["", "", "", "", ""])
+        self.preview_text.delete("1.0", tk.END)
+
+        self.od_entry.delete(0, tk.END)
+        self.plot_title.delete(0, tk.END)
+        self.plot_title.insert(0, "ELISA Standard Curve")
+        self.plot_xlabel.delete(0, tk.END)
+        self.plot_xlabel.insert(0, "Concentration")
+        self.plot_ylabel.delete(0, tk.END)
+        self.plot_ylabel.insert(0, "OD Value")
+
+        self.reset_analysis_state()
+        self.update_window_title()
+        self.status_bar.config(text="New project")
+
+    def new_project(self):
+        """Start a new blank project, prompting to save current work if needed."""
+        if not self.confirm_discard_unsaved_changes(
+            "Do you want to save your current project before starting a new one?"
+        ):
+            return
+
+        self.reset_to_new_project()
 
     def choose_project_save_path(self):
         """Prompt for a project file path."""
@@ -524,43 +759,54 @@ class ELISAApplication:
             self.ax.clear()
             self.canvas.draw()
 
-    def save_project(self):
+    def save_project(self, show_feedback=True):
         """Save the current analysis state to the current project file."""
         filepath = self.current_project_path or self.choose_project_save_path()
 
         if not filepath:
-            return
+            return False
 
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(self.get_project_state(), f, indent=2)
 
             self.current_project_path = filepath
+            self.last_saved_state = self.serialize_project_state()
+            self.add_recent_project(filepath)
             self.update_window_title()
             self.status_bar.config(text=f"Project saved: {filepath}")
-            messagebox.showinfo("Success", f"Project saved successfully to:\n{filepath}")
+            if show_feedback:
+                messagebox.showinfo("Success", f"Project saved successfully to:\n{filepath}")
+            return True
         except OSError as e:
             messagebox.showerror("Error", f"Failed to save project:\n{str(e)}")
+            return False
 
     def save_project_as(self):
         """Save the current analysis state to a new project file."""
         filepath = self.choose_project_save_path()
         if not filepath:
-            return
+            return False
 
         self.current_project_path = filepath
-        self.save_project()
+        return self.save_project()
 
-    def load_project(self):
+    def load_project(self, filepath=None, prompt_to_save=True):
         """Load a saved analysis state from a project file."""
-        filepath = filedialog.askopenfilename(
-            title="Load Project",
-            filetypes=[
-                ("CurveAnalyze Project", "*.curvealyze.json"),
-                ("JSON files", "*.json"),
-                ("All files", "*.*"),
-            ],
-        )
+        if prompt_to_save and not self.confirm_discard_unsaved_changes(
+            "Do you want to save your current project before loading another one?"
+        ):
+            return
+
+        if filepath is None:
+            filepath = filedialog.askopenfilename(
+                title="Load Project",
+                filetypes=[
+                    ("CurveAnalyze Project", "*.curvealyze.json"),
+                    ("JSON files", "*.json"),
+                    ("All files", "*.*"),
+                ],
+            )
 
         if not filepath:
             return
@@ -571,6 +817,8 @@ class ELISAApplication:
 
             self.restore_project_state(state)
             self.current_project_path = filepath
+            self.last_saved_state = self.serialize_project_state()
+            self.add_recent_project(filepath)
             self.update_window_title()
             self.status_bar.config(text=f"Project loaded: {filepath}")
             messagebox.showinfo("Success", f"Project loaded successfully from:\n{filepath}")
@@ -587,7 +835,7 @@ class ELISAApplication:
         input_methods.pack(fill=tk.BOTH, expand=True)
         
         # CSV Import
-        csv_frame = ttk.Frame(input_methods)
+        csv_frame = ttk.Frame(input_methods, style='Section.TFrame', padding=12)
         ttk.Label(csv_frame, text="CSV Import", style='Title.TLabel').pack(pady=10)
         
         btn_frame = ttk.Frame(csv_frame)
@@ -612,7 +860,7 @@ class ELISAApplication:
         input_methods.add(csv_frame, text="CSV Import")
         
         # Manual Entry
-        manual_frame = ttk.Frame(input_methods)
+        manual_frame = ttk.Frame(input_methods, style='Section.TFrame', padding=12)
         ttk.Label(manual_frame, text="Manual Entry", style='Title.TLabel').pack(pady=10)
         
         self.data_table = DataEntryTable(manual_frame)
@@ -633,10 +881,10 @@ class ELISAApplication:
         analysis_tab.columnconfigure(1, weight=1)
         analysis_tab.rowconfigure(0, weight=1)
 
-        control_frame = ttk.Frame(analysis_tab)
+        control_frame = ttk.Frame(analysis_tab, style='Section.TFrame', padding=12)
         control_frame.grid(row=0, column=0, sticky="ns", padx=(10, 5), pady=10)
 
-        results_frame = ttk.Frame(analysis_tab)
+        results_frame = ttk.Frame(analysis_tab, style='Section.TFrame', padding=12)
         results_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(2, weight=1)
@@ -689,7 +937,21 @@ class ELISAApplication:
             row=0, column=0, sticky="w", padx=8, pady=(6, 2)
         )
 
-        self.bulk_od_text = tk.Text(bulk_frame, height=6, width=40)
+        self.bulk_od_text = tk.Text(
+            bulk_frame,
+            height=6,
+            width=40,
+            wrap=tk.NONE,
+            background=self.style.input_bg,
+            foreground=self.style.text_color,
+            insertbackground=self.style.text_color,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self.style.border_color,
+            highlightcolor=self.style.primary_color,
+            padx=8,
+            pady=8,
+        )
         self.bulk_od_text.grid(row=1, column=0, sticky="ew", padx=8, pady=5)
         self.bind_text_context_menu(self.bulk_od_text, editable=True)
         
@@ -700,6 +962,10 @@ class ELISAApplication:
         ttk.Button(bulk_btn_frame, text="Estimate All", 
                   command=self.estimate_bulk_concentrations,
                   style='Primary.TButton').pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(bulk_btn_frame, text="Export CSV",
+                  command=self.export_bulk_results_to_csv,
+                  style='Accent.TButton').pack(side=tk.LEFT, padx=5)
         
         ttk.Button(bulk_btn_frame, text="Clear", 
                   command=self.clear_bulk_data,
@@ -711,7 +977,21 @@ class ELISAApplication:
         results_text_frame.columnconfigure(0, weight=1)
         results_text_frame.rowconfigure(0, weight=1)
 
-        self.bulk_results = tk.Text(results_text_frame, height=14, width=70, state='disabled', wrap=tk.NONE)
+        self.bulk_results = tk.Text(
+            results_text_frame,
+            height=14,
+            width=70,
+            state='disabled',
+            wrap=tk.NONE,
+            background="#f7f9fc",
+            foreground=self.style.text_color,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self.style.border_color,
+            highlightcolor=self.style.primary_color,
+            padx=8,
+            pady=8,
+        )
         self.bind_text_context_menu(self.bulk_results, editable=False)
         bulk_scroll_y = ttk.Scrollbar(results_text_frame, orient="vertical", command=self.bulk_results.yview)
         bulk_scroll_x = ttk.Scrollbar(results_text_frame, orient="horizontal", command=self.bulk_results.xview)
@@ -723,7 +1003,7 @@ class ELISAApplication:
     
     def setup_visualization_tab(self):
         """Results visualization tab"""
-        vis_tab = ttk.Frame(self.notebook)
+        vis_tab = ttk.Frame(self.notebook, style='Section.TFrame', padding=12)
         self.notebook.add(vis_tab, text="Standard Curve")
         
         # Create plot
@@ -733,7 +1013,7 @@ class ELISAApplication:
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         
         # Plot controls
-        ctrl_frame = ttk.Frame(vis_tab)
+        ctrl_frame = ttk.Frame(vis_tab, style='Section.TFrame', padding=8)
         ctrl_frame.pack(fill=tk.X, padx=10, pady=10)
         
         ttk.Button(ctrl_frame, text="Save Plot", 
@@ -741,7 +1021,7 @@ class ELISAApplication:
                   style='Primary.TButton').pack(side=tk.LEFT, padx=5)
         
         # Plot labels
-        label_frame = ttk.Frame(ctrl_frame)
+        label_frame = ttk.Frame(ctrl_frame, style='Section.TFrame')
         label_frame.pack(side=tk.LEFT, padx=20)
         
         ttk.Label(label_frame, text="Title:").grid(row=0, column=0, sticky='e', pady=2)
@@ -1244,6 +1524,58 @@ Models:
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to process bulk OD values:\n{str(e)}")
+
+    def get_bulk_results_rows(self):
+        """Parse the displayed bulk results into exportable rows."""
+        result_text = self.bulk_results.get("1.0", tk.END).strip()
+        if not result_text:
+            return []
+
+        rows = []
+        for line in result_text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("OD Value") or stripped.startswith("-"):
+                continue
+
+            parts = stripped.split()
+            if len(parts) < 2:
+                continue
+
+            od_value = parts[0]
+            concentration = " ".join(parts[1:])
+            rows.append((od_value, concentration))
+
+        return rows
+
+    def export_bulk_results_to_csv(self):
+        """Export the current bulk estimation results to a CSV file."""
+        rows = self.get_bulk_results_rows()
+        if not rows:
+            messagebox.showwarning("Warning", "No bulk results available to export")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="Export Bulk Results",
+            defaultextension=".csv",
+            filetypes=[
+                ("CSV files", "*.csv"),
+                ("All files", "*.*"),
+            ],
+        )
+
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["OD Value", "Concentration"])
+                writer.writerows(rows)
+
+            self.status_bar.config(text=f"Bulk results exported: {filepath}")
+            messagebox.showinfo("Success", f"Bulk results exported successfully to:\n{filepath}")
+        except OSError as e:
+            messagebox.showerror("Error", f"Failed to export bulk results:\n{str(e)}")
     
     def clear_bulk_data(self, update_status=True):
         """Clear bulk OD input and results"""
