@@ -1,6 +1,8 @@
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import os
+import sys
 from pathlib import Path
 import csv
 import json
@@ -13,8 +15,31 @@ from scipy.optimize import brentq, curve_fit
 APP_DIR = Path(__file__).resolve().parent
 THREE_PL_D = 0.0
 APP_NAME = "ELISA Data Analyzer"
-RECENT_PROJECTS_FILE = APP_DIR / "recent_projects.json"
 MAX_RECENT_PROJECTS = 5
+
+
+def get_resource_dir():
+    """Return the directory containing bundled app resources."""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", APP_DIR))
+    return APP_DIR
+
+
+def get_user_data_dir():
+    """Return a writable per-user directory for persistent app state."""
+    if sys.platform.startswith("win"):
+        base_dir = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base_dir = Path.home() / "Library" / "Application Support"
+    else:
+        base_dir = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+
+    return base_dir / "CurveAnalyze"
+
+
+RESOURCE_DIR = get_resource_dir()
+USER_DATA_DIR = get_user_data_dir()
+RECENT_PROJECTS_FILE = USER_DATA_DIR / "recent_projects.json"
 
 # ========== MATHEMATICAL FUNCTIONS ==========
 def four_param_logistic(x, A, B, C, D):
@@ -369,6 +394,7 @@ class ELISAApplication:
     def save_recent_projects(self):
         """Persist the recent project list to disk."""
         try:
+            RECENT_PROJECTS_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(RECENT_PROJECTS_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.recent_projects[:MAX_RECENT_PROJECTS], f, indent=2)
         except OSError:
@@ -1152,7 +1178,7 @@ Models:
         license_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         try:
-            with open(APP_DIR / "LICENSE", "r", encoding="utf-8") as f:
+            with open(RESOURCE_DIR / "LICENSE", "r", encoding="utf-8") as f:
                 license_content = f.read()
         except OSError as e:
             license_content = f"Failed to load LICENSE file:\n{str(e)}"
@@ -1211,7 +1237,7 @@ Models:
         readme_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         try:
-            with open(APP_DIR / "README.md", "r", encoding="utf-8") as f:
+            with open(RESOURCE_DIR / "README.md", "r", encoding="utf-8") as f:
                 readme_content = f.read()
         except OSError as e:
             readme_content = f"Failed to load README.md file:\n{str(e)}"
@@ -1621,7 +1647,7 @@ if __name__ == "__main__":
     
     # Set window icon (optional)
     try:
-        root.iconbitmap('icon.ico')  # Add an icon file if available
+        root.iconbitmap(str(RESOURCE_DIR / "icon.ico"))
     except tk.TclError:
         pass
     
